@@ -7,3 +7,4 @@ A collection of Oracle DBA utilities for database administration and maintenance
 | Folder | Description |
 |--------|-------------|
 | [TNS_REPLACER](./TNS_REPLACER/) | Bulk find-and-replace tool for TNS entries across multiple Oracle database servers |
+| [alertlog-viewer](./alertlog-viewer/) | Time-windowed Oracle alert log viewer with colour-highlighted terminal output |
