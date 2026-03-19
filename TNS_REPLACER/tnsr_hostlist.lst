@@ -1,0 +1,18 @@
+# TNS Replacer - Host List
+# One hostname or IP address per line.
+# Lines starting with # and blank lines are ignored.
+#
+# Format:
+#   <hostname or IP>
+#
+# Example entries below — replace with real server names before use.
+
+# Production database servers
+db-prod-01.example.com
+db-prod-02.example.com
+
+# Test / UAT servers
+db-test-01.example.com
+
+# Development servers
+# db-dev-01.example.com

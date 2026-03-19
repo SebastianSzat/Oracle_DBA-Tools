@@ -1,0 +1,10 @@
+MYDB =
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = new-db-server.example.com)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = mydb.example.com)
+      (SERVER = DEDICATED)
+    )
+  )
