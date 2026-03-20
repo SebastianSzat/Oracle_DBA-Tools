@@ -2,11 +2,11 @@
 
 ## =============================================================== ##
 ## Script name     : alertlog-viewer-colored.sh                    ##
-## Script version  : 1.2.0                                         ##
+## Script version  : 1.3.0                                         ##
 ## Script creator  : Szatai Zalán                                  ##
 ## Script created  : 2025.11.27.                                   ##
 ## Last modified by: Szatai Zalán                                  ##
-## Last modified   : 2026.03.19.                                   ##
+## Last modified   : 2026.03.20.                                   ##
 ## =============================================================== ##
 
 #####################################################################
@@ -39,7 +39,7 @@ export COL_RESET COL_GREEN COL_RED COL_YELLOW COL_BLUE COL_PURPLE
 #####################################################################
 ORACLE_BASE_PATH="${ORACLE_BASE:-/u01/app/oracle}"
 DEFAULT_LOG_PATH="$ORACLE_BASE_PATH/diag/rdbms/$ORACLE_SID/$ORACLE_SID/trace/alert_$ORACLE_SID.log"
-TEMP_OUTPUT_FILE="/tmp/temp_alert_bytime_colored.log"
+TEMP_OUTPUT_FILE="/tmp/temp_alert_bytime_clean_$$.log"
 START_TIME=$(date +%s)
 
 ## Runtime parameters — populated by argument parsing below
@@ -72,7 +72,7 @@ Options:
 Notes:
   - If -f or -t are omitted, the script prompts for them interactively.
   - Coloured output is printed to the terminal.
-  - A clean (uncoloured) copy is always saved to: $TEMP_OUTPUT_FILE
+  - A clean (uncoloured) copy is saved to /tmp/temp_alert_bytime_clean_<PID>.log
   - Both modern (ADR) and classic (pre-11g) Oracle timestamp formats
     are supported.
 
@@ -109,14 +109,22 @@ done
 if [ -z "$FROM_TIME" ]; then
     echo "${COL_GREEN}Please enter the start timestamp:${COL_RESET}"
     echo "Format: yyyy.mm.dd-HH:MM:SS  (e.g. 2025.11.27-13:22:00)"
-    read -p "Start time: " FROM_TIME
+    read -r -p "Start time: " FROM_TIME
+    if [ -z "$FROM_TIME" ]; then
+        echo "${COL_RED}ERROR: Start time cannot be empty.${COL_RESET}"
+        exit 1
+    fi
 fi
 
 ## Prompt for end time if not provided via -t
 if [ -z "$TO_TIME" ]; then
     echo "${COL_GREEN}Please enter the end timestamp:${COL_RESET}"
     echo "Format: yyyy.mm.dd-HH:MM:SS"
-    read -p "End time: " TO_TIME
+    read -r -p "End time: " TO_TIME
+    if [ -z "$TO_TIME" ]; then
+        echo "${COL_RED}ERROR: End time cannot be empty.${COL_RESET}"
+        exit 1
+    fi
 fi
 
 ## Resolve log file path if not provided via -l
@@ -130,7 +138,7 @@ if [ -z "$LOG_FILE_PATH" ]; then
         ## Default not found — prompt the user
         echo "${COL_YELLOW}Default alert log not found: $DEFAULT_LOG_PATH${COL_RESET}"
         echo "Please enter the full path to the alert log file:"
-        read -p "Log file path: " LOG_FILE_PATH
+        read -r -p "Log file path: " LOG_FILE_PATH
     fi
 fi
 
@@ -239,6 +247,10 @@ perl -e '
     #################################################################
     my $epoch_from  = parse_input_date($ENV{FROM_TIME});
     my $epoch_to    = parse_input_date($ENV{TO_TIME});
+
+    die "Start time is not before end time — check -f and -t values.\n"
+        if $epoch_from >= $epoch_to;
+
     my $log_path    = $ENV{LOG_FILE_PATH};
     my $output_path = $ENV{TEMP_OUTPUT_FILE};
 

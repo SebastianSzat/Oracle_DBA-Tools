@@ -17,7 +17,7 @@ A clean (uncoloured) copy of the extracted lines is always saved to a temp file 
 3. If the default path does not exist either, prompts for the path interactively
 4. Passes the parameters to an embedded Perl script for fast date parsing and filtering
 5. For each line inside the time window:
-   - Writes a clean copy to `/tmp/temp_alert_bytime_colored.log`
+   - Writes a clean copy to `/tmp/temp_alert_bytime_clean_<PID>.log`
    - Prints a colour-highlighted version to the terminal
 6. Prints a runtime summary on completion
 
@@ -115,12 +115,12 @@ No log file specified. Using Oracle 19c default:
 Starting processing...
 Time range : 2025.11.27-13:00:00  ->  2025.11.27-14:00:00
 Log file   : /u01/app/oracle/diag/rdbms/MYDB/MYDB/trace/alert_MYDB.log
-Output file: /tmp/temp_alert_bytime_colored.log
+Output file: /tmp/temp_alert_bytime_clean_12345.log
 ----------------------------------------------------------------
 ... (highlighted log lines) ...
 ----------------------------------------------------------------
 Processing complete. Runtime: 2 second(s).
-Clean output saved to: /tmp/temp_alert_bytime_colored.log
+Clean output saved to: /tmp/temp_alert_bytime_clean_12345.log
 ```
 
 ---
@@ -209,9 +209,9 @@ LGWR switch                            <- Green (informational)
 | Output | Description |
 |--------|-------------|
 | Terminal (STDOUT) | Colour-highlighted lines for interactive reading |
-| `/tmp/temp_alert_bytime_colored.log` | Clean plain-text copy, no ANSI codes, safe for piping or archiving |
+| `/tmp/temp_alert_bytime_clean_<PID>.log` | Clean plain-text copy, no ANSI codes, safe for piping or archiving |
 
-The temp file is overwritten on each run.
+A new file is created on each run (filename includes the process ID). Old files are not removed automatically.
 
 ---
 
