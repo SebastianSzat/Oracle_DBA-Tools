@@ -276,3 +276,17 @@ Summa: 1
 - Bash
 - SSH key-based authentication configured for all target hosts
 - Perl available on all remote hosts (standard on Oracle Linux and RedHat)
+
+---
+
+## Security Notes
+
+### `StrictHostKeyChecking=no`
+
+The script uses `StrictHostKeyChecking=no` on all SSH connections. This means SSH will automatically accept any host key — including a **changed** key — without prompting or failing.
+
+**Risk:** In an environment where a server is rebuilt or replaced and its host key changes, the script will connect silently without detecting the change. In an open or untrusted network this could allow a man-in-the-middle attack to intercept the session and receive the file modifications.
+
+**Why it is set this way:** This script is intended for use in closed internal environments where all target hosts are trusted infrastructure machines and network-level isolation prevents MITM attacks. Automatic key acceptance avoids failures caused by routine server rebuilds that change host keys.
+
+**Safer alternative:** On Oracle Linux 8+ (OpenSSH 7.6+) replace `StrictHostKeyChecking=no` with `StrictHostKeyChecking=accept-new`. This accepts keys for hosts that have never been seen before, but **rejects changed keys** and exits immediately — detecting rebuilt or replaced servers without blocking new additions to the fleet.

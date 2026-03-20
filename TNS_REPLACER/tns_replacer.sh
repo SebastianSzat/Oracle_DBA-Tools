@@ -2,7 +2,7 @@
 
 ## =============================================================== ##
 ## Script name            : tns_replacer.sh                        ##
-## Script version         : 1.1.2                                  ##
+## Script version         : 1.3.0                                  ##
 ## Script creator         : Szatai Zalán                           ##
 ## Script created         : 2026.03.19.                            ##
 ## =============================================================== ##
@@ -78,6 +78,11 @@ if [[ -z "$TNS_NAME" ]]; then
     exit 1
 fi
 
+if [[ "$SAFE_MODE" -eq 1 && "$FORCED_MODE" -eq 1 ]]; then
+    echo "Error: -sm (safe mode) and -f (forced mode) cannot be used together."
+    exit 1
+fi
+
 #####################################################################
 ## PRE-FLIGHT CHECKS
 ## Verifies all three required local input files exist before any
@@ -125,7 +130,8 @@ process_host() {
     echo "#####################################################################" >> "$LOG_FILE"
     echo "***** Host: $host *****" >> "$LOG_FILE"
 
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$host" "bash -s" << EOF 2>> "$LOG_FILE" | tee -a "$LOG_FILE"
+    ## StrictHostKeyChecking=no is intentional for closed internal environments — see README Security Notes for risks and a safer alternative.
+    ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 "$host" "bash -s" << EOF 2>> "$LOG_FILE" | tee -a "$LOG_FILE"
 
         ## Find all tnsnames.ora files under the search path.
         ## The -path "*samples*" -prune excludes Oracle sample directories
@@ -184,12 +190,7 @@ process_host() {
                     echo ">>> FILE_STATUS: \$TNS_PATH -> Content mismatch"
                 fi
             else
-                ## NORMAL MODE: create a dated backup then attempt replacement.
-                ## Backup name includes the date so multiple runs on the same day
-                ## are distinguishable and the original is always recoverable.
-                BACKUP_FILE="\${TNS_PATH}.bck_tnsnames.ora_${DATE_STR}"
-                cp "\$TNS_PATH" "\$BACKUP_FILE"
-
+                ## NORMAL MODE: evaluate match quality and attempt replacement.
                 ## Export the found block so Perl can use it as the search string.
                 export OLD_BLOCK_ENV="\$EXISTING_BLOCK"
 
@@ -199,6 +200,12 @@ process_host() {
                 ##                   only allowed when Safe Mode is OFF.
                 ## 3. Forced mode  — replace regardless of content match.
                 if [[ "\$EXISTING_BLOCK" == "$ORIGIN_CONTENT" || ("$SAFE_MODE" -eq 0 && "\$CLEAN_EXISTING" == "$ORIGIN_CLEAN") || "$FORCED_MODE" -eq 1 ]]; then
+
+                    ## Backup is created only when replacement will actually proceed.
+                    ## Creating it unconditionally would leave stale backup files on
+                    ## hosts where the entry was found but the content did not match.
+                    BACKUP_FILE="\${TNS_PATH}.bck_tnsnames.ora_${DATE_STR}"
+                    cp "\$TNS_PATH" "\$BACKUP_FILE"
 
                     ## Perl replaces the old block with the new content in-place.
                     ## \Q...\E quotes the search string literally so parentheses,
@@ -213,16 +220,16 @@ process_host() {
                     else
                         echo ">>> FILE_STATUS: \$TNS_PATH -> Success (Replaced)"
                     fi
+
+                    ## Show a unified diff of the backup vs the updated file so the
+                    ## change is visible in the log without opening both files manually.
+                    echo "==== DIFF ===="
+                    diff "\$BACKUP_FILE" "\$TNS_PATH"
+                    echo "==== ==== ===="
+                    echo ""
                 else
                     echo ">>> FILE_STATUS: \$TNS_PATH -> Failed (Mismatch)"
                 fi
-
-                ## Show a unified diff of the backup vs the updated file so the
-                ## change is visible in the log without opening both files manually.
-                echo "==== DIFF ===="
-                diff \$BACKUP_FILE \$TNS_PATH
-                echo "==== ==== ===="
-                echo ""
             fi
         done
 EOF
@@ -246,8 +253,8 @@ EOF
 ## hostname makes it easy to scan the console output across many hosts.
 #####################################################################
 echo ""
-echo "#####################################################################" >> $LOG_FILE
-echo "Script started at $(date +"%Y.%m.%d %H:%M:%S")" >> $LOG_FILE
+echo "#####################################################################" >> "$LOG_FILE"
+echo "Script started at $(date +"%Y.%m.%d %H:%M:%S")" >> "$LOG_FILE"
 while IFS= read -r remote_host || [[ -n "$remote_host" ]]; do
     [[ -z "$remote_host" || "$remote_host" =~ ^# ]] && continue
     echo "Processing Hostname: $remote_host - $(date +"%Y.%m.%d %H:%M:%S")"
@@ -255,13 +262,13 @@ while IFS= read -r remote_host || [[ -n "$remote_host" ]]; do
         CLEAN_LINE=$(echo "$line" | sed -e 's/FILE_STATUS: //' -e 's/HOST_STATUS: //')
         echo "$remote_host: $CLEAN_LINE"
     done
-    echo "" >> $LOG_FILE
+    echo "" >> "$LOG_FILE"
 
 done < "$HOST_LIST"
-echo "" >> $LOG_FILE
-echo "#####################################################################" >> $LOG_FILE
-echo "Script finished at $(date +"%Y.%m.%d %H:%M:%S")" >> $LOG_FILE
-echo "#####################################################################" >> $LOG_FILE
+echo "" >> "$LOG_FILE"
+echo "#####################################################################" >> "$LOG_FILE"
+echo "Script finished at $(date +"%Y.%m.%d %H:%M:%S")" >> "$LOG_FILE"
+echo "#####################################################################" >> "$LOG_FILE"
 
 #####################################################################
 ## SUMMARY
@@ -271,20 +278,20 @@ echo "#####################################################################" >> 
 ## because any variable incremented inside the SSH heredoc lives in
 ## the remote session and is lost when the connection closes.
 #####################################################################
-N_PROCESS_COUNT=$(grep -c "Success (Replaced)" "$LOG_FILE")
-F_PROCESS_COUNT=$(grep -c "Success (Forced replacement)" "$LOG_FILE")
+N_PROCESS_COUNT=$(grep -cF "Success (Replaced)" "$LOG_FILE")
+F_PROCESS_COUNT=$(grep -cF "Success (Forced replacement)" "$LOG_FILE")
 
 echo ""
 echo "Done. Logs: $LOG_FILE"
 echo ""
 echo "Found TNS entries for ${TNS_NAME}"
 echo "--------------------------------------------"
-echo "Already up-to-date:     $(grep -c "Already up to date" $LOG_FILE)"
-echo "Perfect TNS match:      $(grep -c "Match (Exact)" $LOG_FILE)"
-echo "Semi-perfect TNS match: $(grep -c "Match (Fuzzy)" $LOG_FILE)      (whitespaces, linebreaks different, content matches)"
-echo "Content mismatch:       $(grep -c "Content mismatch" $LOG_FILE)"
-echo "TNS entry not found:    $(grep -c "NOT FOUND" $LOG_FILE)"
-echo "Summa:                  $(grep -c ">>> FILE_STATUS" $LOG_FILE)"
+echo "Already up-to-date:     $(grep -cF "Already up to date" "$LOG_FILE")"
+echo "Perfect TNS match:      $(grep -cF "Match (Exact)" "$LOG_FILE")"
+echo "Semi-perfect TNS match: $(grep -cF "Match (Fuzzy)" "$LOG_FILE")      (whitespaces, linebreaks different, content matches)"
+echo "Content mismatch:       $(grep -cF "Content mismatch" "$LOG_FILE")"
+echo "TNS entry not found:    $(grep -cF "NOT FOUND" "$LOG_FILE")"
+echo "Summa:                  $(grep -cF ">>> FILE_STATUS" "$LOG_FILE")"
 echo ""
 echo "Processed TNS entries"
 echo "--------------------------------------------"
