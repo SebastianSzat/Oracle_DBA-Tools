@@ -2,11 +2,11 @@
 
 ## =============================================================== ##
 ## Script name     : ora-user-ensure.sh                            ##
-## Script version  : 2.0.0                                         ##
+## Script version  : 2.2.0                                         ##
 ## Script creator  : Szatai Zalán                                  ##
 ## Script created  : 2026.02.27.                                   ##
 ## Last modified by: Szatai Zalán                                  ##
-## Last modified   : 2026.03.19.                                   ##
+## Last modified   : 2026.03.20.                                   ##
 ## =============================================================== ##
 
 #####################################################################
@@ -34,11 +34,16 @@ COL_CYAN=$'\033[0;36m'
 ## pattern, the same file is used for all databases.
 #####################################################################
 HOST_FILE="hosts.txt"
-ENV_FILE_PATTERN="~/env<SID>.sh"
+ENV_FILE_PATTERN='$HOME/env<SID>.sh'
 SQL_SCRIPT="create_user.sql"
 MAIN_LOG="oracle_check_$(date +%Y%m%d_%H%M%S).log"
 RESULT_LOG="latest_result.log"
 SQL_LOG="oracle_sql_$(date +%Y%m%d_%H%M%S).log"
+
+## SSH options applied to every remote call.
+## BatchMode=yes prevents the script from hanging on a password prompt
+## if key-based authentication fails mid-run on any host.
+SSH_OPTS=(-q -o ConnectTimeout=10 -o BatchMode=yes)
 
 ## Runtime parameters — populated by argument parsing
 TARGET_USER=""
@@ -62,7 +67,7 @@ Input files:
   -ef    <pattern>   Env file pattern. Use <SID> as a token — it is
                      replaced at runtime with the discovered SID.
                      If <SID> is absent, the same file is used for all DBs.
-                     (Default: ~/env<SID>.sh)
+                     (Default: \$HOME/env<SID>.sh)
   -sql   <file>      SQL script to run when creating the user.
                                                        (Default: create_user.sql)
 
@@ -133,6 +138,14 @@ if [[ -z "$TARGET_USER" ]]; then
     exit 1
 fi
 
+## Validate TARGET_USER format to prevent SQL injection.
+## Oracle usernames: start with a letter; letters, digits, _, $, # only; max 30 chars.
+if [[ ! "$TARGET_USER" =~ ^[A-Za-z][A-Za-z0-9_\$#]{0,29}$ ]]; then
+    echo "${COL_RED}ERROR: Invalid Oracle username: '${TARGET_USER}'.${COL_RESET}"
+    echo "       Must start with a letter; may contain letters, digits, _, \$, # only; max 30 characters."
+    exit 1
+fi
+
 ## Normalise PDB_MODE and RAC_MODE to lowercase for safe comparison
 PDB_MODE=$(echo "$PDB_MODE" | tr '[:upper:]' '[:lower:]')
 RAC_MODE=$(echo "$RAC_MODE" | tr '[:upper:]' '[:lower:]')
@@ -155,10 +168,17 @@ echo "" > "$RESULT_LOG"
 
 #####################################################################
 ## LOGGING FUNCTION
-## Writes a timestamped message to both the console and the main log.
+## Prints a timestamped, colour-highlighted message to the terminal
+## and writes a clean (ANSI-stripped) copy to the main log file.
+## Separating the two prevents raw escape codes from appearing in
+## the log file and breaking grep or further log processing.
 #####################################################################
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$MAIN_LOG"
+    local msg="$1"
+    local timestamp
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+    echo "${timestamp} - ${msg}"
+    echo "${timestamp} - ${msg}" | sed $'s/\033\\[[0-9;]*m//g' >> "$MAIN_LOG"
 }
 
 #####################################################################
@@ -210,8 +230,8 @@ check_and_create_user() {
     ## COUNT(*) always returns a number so the result is unambiguous —
     ## unlike SELECT username which returns empty rows for a missing user.
     local check_output
-    check_output=$(ssh -q -o ConnectTimeout=10 "$host" "
-        source ${env_file}
+    check_output=$(ssh "${SSH_OPTS[@]}" "$host" "
+        source \"${env_file}\"
         sqlplus -S / as sysdba << '__SQLEND__'
             SET HEADING OFF FEEDBACK OFF PAGESIZE 0 VERIFY OFF TRIMSPOOL ON
             ${pdb_switch}
@@ -255,16 +275,34 @@ __SQLEND__
             {
                 [[ -n "$pdb_name" ]] && echo "ALTER SESSION SET CONTAINER = ${pdb_name};"
                 cat "$SQL_SCRIPT"
-            } | ssh -q -o ConnectTimeout=10 "$host" "
-                source ${env_file}
+            } | ssh "${SSH_OPTS[@]}" "$host" "
+                source \"${env_file}\"
                 sqlplus -S / as sysdba
             " >> "$SQL_LOG" 2>&1
 
-            if [[ $? -eq 0 ]]; then
+            ## Verify the user was actually created regardless of grant errors.
+            ## sqlplus exits 0 even when individual statements fail (e.g. granting a
+            ## role that does not exist on this database). Re-querying dba_users is
+            ## the only reliable way to confirm success without false negatives.
+            local verify_output
+            verify_output=$(ssh "${SSH_OPTS[@]}" "$host" "
+                source \"${env_file}\"
+                sqlplus -S / as sysdba << '__SQLEND__'
+                    SET HEADING OFF FEEDBACK OFF PAGESIZE 0 VERIFY OFF TRIMSPOOL ON
+                    ${pdb_switch}
+                    SELECT COUNT(*) FROM dba_users WHERE username = UPPER('${TARGET_USER}');
+                    EXIT;
+__SQLEND__
+            " 2>/dev/null)
+
+            local verify_count
+            verify_count=$(echo "$verify_output" | grep -v "^[[:space:]]*$" | tail -n 1 | tr -d '[:space:]')
+
+            if [[ "$verify_count" == "1" ]]; then
                 log "   ${COL_GREEN}[CREATED]${COL_RESET} ${label} — ${TARGET_USER} created successfully."
                 echo ">  ${label} - CREATED, ${TARGET_USER} created" >> "$RESULT_LOG"
             else
-                log "   ${COL_RED}[FAILED]${COL_RESET}  ${label} — creation error. See SQL log: ${SQL_LOG}"
+                log "   ${COL_RED}[FAILED]${COL_RESET}  ${label} — user not found after creation attempt. See SQL log: ${SQL_LOG}"
                 echo ">  ${label} - FAILED, creation error" >> "$RESULT_LOG"
             fi
         else
@@ -309,7 +347,7 @@ while read -u 3 -r HOST; do
     ## A lightweight probe before doing any real work on the host.
     ## BatchMode=yes prevents SSH from hanging on password prompts.
     #################################################################
-    ssh -q -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "true" 2>/dev/null
+    ssh "${SSH_OPTS[@]}" "$HOST" "true" 2>/dev/null
     if [[ $? -ne 0 ]]; then
         log "${COL_RED}[UNREACHABLE]${COL_RESET} ${HOST} — SSH connection failed."
         echo ">  CONNECTION FAILED" >> "$RESULT_LOG"
@@ -322,7 +360,7 @@ while read -u 3 -r HOST; do
     ## processes. ASM, Grid, and MGMTDB processes are excluded as
     ## they are infrastructure processes, not user databases.
     #################################################################
-    SIDS=$(ssh -q -o ConnectTimeout=10 "$HOST" \
+    SIDS=$(ssh "${SSH_OPTS[@]}" "$HOST" \
         "ps -ef | grep ora_pmon_ | grep -v grep \
                 | grep -v '+ASM' | grep -v 'GRID' | grep -v 'MGMTDB' \
                 | awk -F'ora_pmon_' '{print \$2}'" 2>/dev/null)
@@ -335,7 +373,12 @@ while read -u 3 -r HOST; do
 
     #################################################################
     ## PER-SID PROCESSING LOOP
+    ## SEEN_SIDS tracks which base SIDs have already been processed
+    ## on this host. On a RAC cluster where both PROD1 and PROD2 run
+    ## on the same node, both strip to PROD — without the guard the
+    ## same database would be queried and logged twice.
     #################################################################
+    declare -A SEEN_SIDS=()
     for RAW_SID in $SIDS; do
 
         ## Strip whitespace from the SID string
@@ -346,7 +389,7 @@ while read -u 3 -r HOST; do
         ## (e.g. PROD1, PROD2). Stripping gives the base SID used in
         ## the env file name (e.g. envPROD.sh covers both instances).
         if [[ "$RAC_MODE" == "on" ]]; then
-            BASE_SID="${SID%%[0-9]*}"
+            BASE_SID=$(echo "$SID" | sed 's/[0-9]*$//')
             if [[ -z "$BASE_SID" ]]; then
                 log "  -> ${COL_YELLOW}[SKIP]${COL_RESET} SID '${SID}' reduced to empty after RAC stripping — skipping."
                 continue
@@ -354,6 +397,13 @@ while read -u 3 -r HOST; do
             [[ "$BASE_SID" != "$SID" ]] && log "  -> RAC instance detected: ${SID} → using base SID: ${BASE_SID}"
             SID="$BASE_SID"
         fi
+
+        ## Skip if this base SID was already processed on this host
+        if [[ -n "${SEEN_SIDS[$SID]+_}" ]]; then
+            log "  -> ${SID} already processed on ${HOST} — skipping duplicate RAC instance."
+            continue
+        fi
+        SEEN_SIDS[$SID]=1
 
         log " > DB: ${SID}"
 
@@ -366,7 +416,7 @@ while read -u 3 -r HOST; do
         ## Verify the env file exists on the remote host before
         ## attempting to source it. Missing env files are logged and
         ## skipped rather than causing a cryptic sqlplus error.
-        ssh -q -o ConnectTimeout=10 "$HOST" "test -f ${ENV_FILE_PATH}" 2>/dev/null
+        ssh "${SSH_OPTS[@]}" "$HOST" "test -f \"${ENV_FILE_PATH}\"" 2>/dev/null
         if [[ $? -ne 0 ]]; then
             log "  -> ${COL_YELLOW}[SKIP]${COL_RESET} Env file not found on ${HOST}: ${ENV_FILE_PATH}"
             echo ">  ${HOST}/${SID} - SKIP, env file missing: ${ENV_FILE_PATH}" >> "$RESULT_LOG"
@@ -384,8 +434,8 @@ while read -u 3 -r HOST; do
         #############################################################
         if [[ "$PDB_MODE" == "on" ]]; then
 
-            PDB_NAMES=$(ssh -q -o ConnectTimeout=10 "$HOST" "
-                source ${ENV_FILE_PATH}
+            PDB_NAMES=$(ssh "${SSH_OPTS[@]}" "$HOST" "
+                source \"${ENV_FILE_PATH}\"
                 sqlplus -S / as sysdba << '__SQLEND__'
                     SET HEADING OFF FEEDBACK OFF PAGESIZE 0 VERIFY OFF TRIMSPOOL ON
                     SELECT name FROM v\$pdbs
@@ -409,7 +459,7 @@ __SQLEND__
                     ## Apply PDB list filter if -pdb-list was specified.
                     ## Comparison is case-insensitive to be forgiving of input.
                     if [[ -n "$PDB_LIST" ]]; then
-                        if ! echo ",${PDB_LIST}," | grep -qi ",${PDB},"; then
+                        if ! echo ",${PDB_LIST}," | grep -qFi ",${PDB},"; then
                             log "   -> ${COL_CYAN}[FILTERED]${COL_RESET} PDB ${PDB} not in pdb-list — skipping."
                             continue
                         fi
