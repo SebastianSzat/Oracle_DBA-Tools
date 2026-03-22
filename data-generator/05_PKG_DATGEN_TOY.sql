@@ -26,11 +26,11 @@
 CREATE OR REPLACE PACKAGE PKG_DATGEN_TOY AS
 
     /* -------------------------------------------------------------------------
-       f_log
+       f_log  (function overload)
        Write one entry to T_DATGEN_TOY_LOG and return the message text.
-       The COMMIT inside f_log ensures each entry survives a caller rollback.
-       Assign the return value to v_log_discard when the caller does not need
-       the text but still wants the log entry committed.
+       Uses PRAGMA AUTONOMOUS_TRANSACTION so the log COMMIT never touches
+       the caller's transaction — the entry survives a caller rollback without
+       side-effects on any in-progress DML.
     ------------------------------------------------------------------------- */
     FUNCTION f_log (
         i_run_id     NUMBER,
@@ -38,6 +38,18 @@ CREATE OR REPLACE PACKAGE PKG_DATGEN_TOY AS
         i_step       VARCHAR2,
         i_info       VARCHAR2
     ) RETURN VARCHAR2;
+
+    /* -------------------------------------------------------------------------
+       f_log  (procedure overload)
+       Convenience wrapper for callers that do not need the return value.
+       Eliminates the need for a v_log_discard sink variable.
+    ------------------------------------------------------------------------- */
+    PROCEDURE f_log (
+        i_run_id     NUMBER,
+        i_table_name VARCHAR2,
+        i_step       VARCHAR2,
+        i_info       VARCHAR2
+    );
 
     /* -------------------------------------------------------------------------
        f_random_string
@@ -180,10 +192,35 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
     -- they can log errors without receiving run_id as a parameter.
     v_run_id      NUMBER(12);
 
-    -- Discard variable for f_log return values when the caller does not need
-    -- the text but must capture the return to satisfy PL/SQL assignment rules.
-    -- Intentionally never read after assignment.
-    v_log_discard VARCHAR2(4000);
+    -- (v_log_discard removed — f_log procedure overload replaces this pattern)
+
+    /* -------------------------------------------------------------------------
+       Column-set record and table types — declared at package level so they
+       can be shared between f_fill_tables, get_column_sets, and p_analyze.
+    ------------------------------------------------------------------------- */
+    TYPE t_pk_rec IS RECORD (
+        col_name    VARCHAR2(64),
+        data_type   VARCHAR2(64),
+        data_length NUMBER
+    );
+    TYPE t_pk_tab IS TABLE OF t_pk_rec INDEX BY PLS_INTEGER;
+
+    TYPE t_cfg_rec IS RECORD (
+        col_name         VARCHAR2(64),
+        constraint_type  VARCHAR2(1),
+        fill_str         VARCHAR2(4000)
+    );
+    TYPE t_cfg_tab IS TABLE OF t_cfg_rec INDEX BY PLS_INTEGER;
+
+    TYPE t_reg_rec IS RECORD (
+        col_name    VARCHAR2(64),
+        data_type   VARCHAR2(64),
+        data_length NUMBER,
+        data_prec   NUMBER,
+        data_scale  NUMBER,
+        nullable    VARCHAR2(1)
+    );
+    TYPE t_reg_tab IS TABLE OF t_reg_rec INDEX BY PLS_INTEGER;
 
 
     /* =========================================================================
@@ -195,12 +232,32 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         i_step       VARCHAR2,
         i_info       VARCHAR2
     ) RETURN VARCHAR2 IS
+        -- Autonomous transaction: the INSERT+COMMIT run in a separate transaction
+        -- so the log entry is durable regardless of what the caller does.
+        -- Unlike a plain COMMIT, this never touches the caller's pending DML.
+        PRAGMA AUTONOMOUS_TRANSACTION;
     BEGIN
         INSERT INTO T_DATGEN_TOY_LOG (run_id, table_name, step, status_info)
         VALUES (i_run_id, i_table_name, i_step, i_info);
-        -- Immediate commit: this entry survives even if the caller rolls back.
         COMMIT;
         RETURN i_info;
+    END f_log;
+
+
+    /* =========================================================================
+       f_log  (procedure overload)
+       Delegates to the function; the return value is discarded by the compiler.
+       Replaces the old v_log_discard := f_log(...) pattern.
+    ========================================================================= */
+    PROCEDURE f_log (
+        i_run_id     NUMBER,
+        i_table_name VARCHAR2,
+        i_step       VARCHAR2,
+        i_info       VARCHAR2
+    ) IS
+        v_discard VARCHAR2(4000);
+    BEGIN
+        v_discard := f_log(i_run_id, i_table_name, i_step, i_info);
     END f_log;
 
 
@@ -217,8 +274,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         RETURN v_result;
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_string',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_string',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_string;
 
@@ -238,8 +296,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         RETURN v_result;
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_number',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_number',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_number;
 
@@ -260,8 +319,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         RETURN v_result;
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_date',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_date',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_date;
 
@@ -284,8 +344,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         RETURN v_result;
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_timestamp',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_timestamp',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_timestamp;
 
@@ -309,8 +370,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         RETURN HEXTORAW(SUBSTR(v_hex, 1, v_target * 2));
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_raw',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_raw',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_raw;
 
@@ -323,8 +385,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         RETURN TO_BINARY_FLOAT(DBMS_RANDOM.VALUE);
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_binary_float',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_binary_float',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_binary_float;
 
@@ -337,8 +400,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         RETURN TO_BINARY_DOUBLE(DBMS_RANDOM.VALUE);
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_binary_double',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_binary_double',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_binary_double;
 
@@ -361,8 +425,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
             IF v_result IS NOT NULL THEN
                 DBMS_LOB.FREETEMPORARY(v_result);
             END IF;
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_clob',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_clob',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_clob;
 
@@ -404,10 +469,119 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
             -- Free both temporaries if they were created before the error.
             IF v_clob   IS NOT NULL THEN DBMS_LOB.FREETEMPORARY(v_clob);   END IF;
             IF v_result IS NOT NULL THEN DBMS_LOB.FREETEMPORARY(v_result); END IF;
-            v_log_discard := f_log(v_run_id, NULL, 'f_random_blob',
-                                   'Unhandled error: ' || SQLERRM);
+            f_log(v_run_id, NULL, 'f_random_blob',
+                  'Unhandled error: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             RETURN NULL;
     END f_random_blob;
+
+
+    /* =========================================================================
+       get_column_sets  (private)
+       Collects all three column sets for a given table into caller-supplied
+       associative arrays.  Called by both f_fill_tables (pre-analysis phase)
+       and p_analyze to ensure both always reflect the same logic.
+
+       o_auto_pk_cols / o_auto_pk_cnt  — PK columns with no COLS override
+       o_cfg_cols     / o_cfg_cnt      — COLS-configured columns
+       o_reg_cols     / o_reg_cnt      — regular columns (not PK, not COLS)
+       o_table_has_lob                 — TRUE if any regular column is a LOB type
+    ========================================================================= */
+    PROCEDURE get_column_sets (
+        i_table_name    IN  VARCHAR2,
+        o_auto_pk_cols  OUT t_pk_tab,
+        o_auto_pk_cnt   OUT PLS_INTEGER,
+        o_cfg_cols      OUT t_cfg_tab,
+        o_cfg_cnt       OUT PLS_INTEGER,
+        o_reg_cols      OUT t_reg_tab,
+        o_reg_cnt       OUT PLS_INTEGER,
+        o_table_has_lob OUT BOOLEAN
+    ) IS
+    BEGIN
+        o_auto_pk_cnt   := 0;
+        o_cfg_cnt       := 0;
+        o_reg_cnt       := 0;
+        o_table_has_lob := FALSE;
+
+        /* ---- Auto-handled PK columns (no COLS override) ------------------- */
+        FOR pk_col IN (
+            SELECT ucc.column_name,
+                   utc.data_type,
+                   CASE WHEN utc.data_type IN ('NVARCHAR2','NCHAR')
+                        THEN utc.char_length
+                        ELSE utc.data_length
+                   END AS data_length
+            FROM   user_cons_columns ucc
+            JOIN   user_constraints  uc  ON ucc.constraint_name = uc.constraint_name
+            JOIN   user_tab_cols     utc ON utc.table_name       = ucc.table_name
+                                       AND utc.column_name       = ucc.column_name
+            WHERE  uc.constraint_type = 'P'
+              AND  uc.table_name      = i_table_name
+              AND  NOT EXISTS (
+                       SELECT 1 FROM T_DATGEN_TOY_COLS c
+                       WHERE  c.table_name  = ucc.table_name
+                         AND  c.column_name = ucc.column_name
+                   )
+        ) LOOP
+            o_auto_pk_cnt := o_auto_pk_cnt + 1;
+            o_auto_pk_cols(o_auto_pk_cnt).col_name    := pk_col.column_name;
+            o_auto_pk_cols(o_auto_pk_cnt).data_type   := pk_col.data_type;
+            o_auto_pk_cols(o_auto_pk_cnt).data_length := pk_col.data_length;
+        END LOOP;
+
+        /* ---- COLS-configured columns --------------------------------------- */
+        FOR cfg_col IN (
+            SELECT column_name, constraint_type, filling_string
+            FROM   T_DATGEN_TOY_COLS
+            WHERE  table_name = i_table_name
+        ) LOOP
+            o_cfg_cnt := o_cfg_cnt + 1;
+            o_cfg_cols(o_cfg_cnt).col_name        := cfg_col.column_name;
+            o_cfg_cols(o_cfg_cnt).constraint_type := cfg_col.constraint_type;
+            o_cfg_cols(o_cfg_cnt).fill_str        := cfg_col.filling_string;
+        END LOOP;
+
+        /* ---- Regular columns (not PK, not COLS, not virtual/hidden) ------- */
+        FOR reg_col IN (
+            SELECT utc.column_name,
+                   utc.data_type,
+                   CASE WHEN utc.data_type IN ('NVARCHAR2','NCHAR')
+                        THEN utc.char_length
+                        ELSE utc.data_length
+                   END AS data_length,
+                   utc.data_precision,
+                   utc.data_scale,
+                   utc.nullable
+            FROM   user_tab_cols utc
+            WHERE  utc.table_name      = i_table_name
+              AND  utc.virtual_column  = 'NO'
+              AND  utc.hidden_column   = 'NO'
+              AND  utc.column_name NOT IN (
+                       SELECT c.column_name FROM T_DATGEN_TOY_COLS c
+                       WHERE  c.table_name = i_table_name
+                   )
+              AND  utc.column_name NOT IN (
+                       SELECT ucc.column_name
+                       FROM   user_cons_columns ucc
+                       JOIN   user_constraints  uc ON ucc.constraint_name = uc.constraint_name
+                       WHERE  uc.constraint_type = 'P'
+                         AND  uc.table_name      = i_table_name
+                   )
+        ) LOOP
+            o_reg_cnt := o_reg_cnt + 1;
+            o_reg_cols(o_reg_cnt).col_name   := reg_col.column_name;
+            o_reg_cols(o_reg_cnt).data_type  := reg_col.data_type;
+            o_reg_cols(o_reg_cnt).data_length:= reg_col.data_length;
+            o_reg_cols(o_reg_cnt).data_prec  := reg_col.data_precision;
+            o_reg_cols(o_reg_cnt).data_scale := reg_col.data_scale;
+            o_reg_cols(o_reg_cnt).nullable   := reg_col.nullable;
+
+            IF reg_col.data_type IN ('BLOB','CLOB','NCLOB') THEN
+                o_table_has_lob := TRUE;
+            END IF;
+        END LOOP;
+
+    END get_column_sets;
 
 
     /* =========================================================================
@@ -491,39 +665,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         /* -----------------------------------------------------------------
            Pre-analysis column caches
            All three column sets (auto-PK, COLS-configured, regular) are
-           collected into arrays once per table before the insert loop to
-           avoid re-executing the same cursor queries on every row iteration.
+           populated once per table by get_column_sets() before the insert
+           loop to avoid re-executing the same cursor queries on every row.
+           Type declarations live at package level (shared with p_analyze).
         ----------------------------------------------------------------- */
-
-        -- Auto-handled PK columns (not overridden in T_DATGEN_TOY_COLS)
-        TYPE t_pk_rec IS RECORD (
-            col_name    VARCHAR2(64),
-            data_type   VARCHAR2(64),
-            data_length NUMBER
-        );
-        TYPE t_pk_tab IS TABLE OF t_pk_rec INDEX BY PLS_INTEGER;
         v_auto_pk_cols  t_pk_tab;
         v_auto_pk_cnt   PLS_INTEGER;
-
-        -- COLS-configured columns (FK, UI, custom PK, LOB expressions)
-        TYPE t_cfg_rec IS RECORD (
-            col_name    VARCHAR2(64),
-            fill_str    VARCHAR2(4000)
-        );
-        TYPE t_cfg_tab IS TABLE OF t_cfg_rec INDEX BY PLS_INTEGER;
         v_cfg_cols      t_cfg_tab;
         v_cfg_cnt       PLS_INTEGER;
-
-        -- Regular columns (auto-detected by data type; not PK, not in COLS)
-        TYPE t_reg_rec IS RECORD (
-            col_name    VARCHAR2(64),
-            data_type   VARCHAR2(64),
-            data_length NUMBER,
-            data_prec   NUMBER,
-            data_scale  NUMBER,
-            nullable    VARCHAR2(1)    -- 'Y' = nullable, 'N' = NOT NULL
-        );
-        TYPE t_reg_tab IS TABLE OF t_reg_rec INDEX BY PLS_INTEGER;
         v_reg_cols      t_reg_tab;
         v_reg_cnt       PLS_INTEGER;
 
@@ -531,6 +680,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
            Miscellaneous
         ----------------------------------------------------------------- */
         v_log           VARCHAR2(4000);    -- Return buffer from f_log
+        v_safe_tbl      VARCHAR2(64);      -- DBMS_ASSERT-validated table identifier
+                                           -- Used in all dynamic SQL to prevent injection
 
     BEGIN
 
@@ -568,6 +719,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                 v_log := f_log(v_run_id, cmd.TABLE_NAME, 'f_fill_tables',
                                'Processing table: ' || cmd.TABLE_NAME);
 
+                -- Validate the table name as a safe SQL identifier before use
+                -- in any dynamic SQL.  ENQUOTE_NAME raises ORA-44003 if the name
+                -- contains characters that could be used for injection.
+                v_safe_tbl := DBMS_ASSERT.ENQUOTE_NAME(cmd.TABLE_NAME, FALSE);
+
                 /* ------------------------------------------------------------
                    Reset per-table caches.
                 ------------------------------------------------------------ */
@@ -589,7 +745,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                 /* ------------------------------------------------------------
                    Determine how many rows to insert this run.
                 ------------------------------------------------------------ */
-                EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM ' || cmd.TABLE_NAME
+                EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM ' || v_safe_tbl
                     INTO v_actual_rows;
 
                 IF v_actual_rows >= cmd.MAX_ROWS THEN
@@ -616,11 +772,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                 IF v_rows_needed > 0 THEN
 
                 /* ------------------------------------------------------------
-                   PK PRE-ANALYSIS
-                   1. Count PK columns; log a notice for composite PKs.
-                   2. Collect auto-handled PK columns (no COLS override) into cache.
-                   3. Query MAX(col) for NUMBER PKs; COUNT(*) for short VARCHAR2 PKs.
+                   COLUMN PRE-ANALYSIS
+                   Collect all three column sets in a single call.
+                   Results are cached in v_auto_pk_cols, v_cfg_cols, and
+                   v_reg_cols so the insert loop does not re-execute cursor
+                   queries on every row.
                 ------------------------------------------------------------ */
+                get_column_sets(cmd.TABLE_NAME,
+                                v_auto_pk_cols, v_auto_pk_cnt,
+                                v_cfg_cols,     v_cfg_cnt,
+                                v_reg_cols,     v_reg_cnt,
+                                v_table_has_lob);
+
+                /* -- Composite PK notice ----------------------------------- */
                 SELECT COUNT(*)
                 INTO   v_pk_col_count
                 FROM   user_cons_columns ucc
@@ -636,166 +800,66 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                                    || 'independently by its data type.');
                 END IF;
 
-                FOR pk_col IN (
-                    SELECT ucc.column_name,
-                           utc.data_type,
-                           -- NVARCHAR2/NCHAR: DATA_LENGTH is the byte limit
-                           -- (e.g. 200 for NVARCHAR2(100) with AL16UTF16).
-                           -- CHAR_LENGTH holds the declared character limit,
-                           -- which is what f_random_string and the < 32 check
-                           -- must use to avoid ORA-12899.
-                           CASE WHEN utc.data_type IN ('NVARCHAR2','NCHAR')
-                                THEN utc.char_length
-                                ELSE utc.data_length
-                           END AS data_length
-                    FROM   user_cons_columns ucc
-                    JOIN   user_constraints  uc
-                           ON  ucc.constraint_name = uc.constraint_name
-                    JOIN   user_tab_cols     utc
-                           ON  utc.table_name  = ucc.table_name
-                           AND utc.column_name = ucc.column_name
-                    WHERE  uc.constraint_type = 'P'
-                      AND  uc.table_name      = cmd.TABLE_NAME
-                      AND  NOT EXISTS (
-                               SELECT 1 FROM T_DATGEN_TOY_COLS c
-                               WHERE  c.table_name  = ucc.table_name
-                                 AND  c.column_name = ucc.column_name
-                           )
-                ) LOOP
-                    v_auto_pk_cnt := v_auto_pk_cnt + 1;
-                    v_auto_pk_cols(v_auto_pk_cnt).col_name    := pk_col.column_name;
-                    v_auto_pk_cols(v_auto_pk_cnt).data_type   := pk_col.data_type;
-                    v_auto_pk_cols(v_auto_pk_cnt).data_length := pk_col.data_length;
-
-                    IF pk_col.data_type = 'NUMBER' THEN
+                /* -- PK numeric base caching -------------------------------- */
+                FOR i IN 1 .. v_auto_pk_cnt LOOP
+                    IF v_auto_pk_cols(i).data_type = 'NUMBER' THEN
                         -- Cache MAX so the insert loop can use MAX + idx without
                         -- re-querying the table on every row.
                         EXECUTE IMMEDIATE
-                            'SELECT NVL(MAX(' || pk_col.column_name || '), 0) FROM '
-                            || cmd.TABLE_NAME
+                            'SELECT NVL(MAX(' || v_auto_pk_cols(i).col_name || '), 0) FROM '
+                            || v_safe_tbl
                             INTO v_pk_max;
-                        v_pk_max_tab(pk_col.column_name) := v_pk_max;
+                        v_pk_max_tab(v_auto_pk_cols(i).col_name) := v_pk_max;
 
-                    ELSIF pk_col.data_type IN ('VARCHAR2','CHAR','NVARCHAR2','NCHAR')
-                      AND pk_col.data_length < 32
+                    ELSIF v_auto_pk_cols(i).data_type IN ('VARCHAR2','CHAR','NVARCHAR2','NCHAR')
+                      AND v_auto_pk_cols(i).data_length < 32
                     THEN
                         -- Column is too short for a 32-char SYS_GUID().
                         -- Reuse the COUNT(*) already captured in v_actual_rows —
                         -- no rows have been inserted yet, so the values are identical.
-                        v_pk_max_tab(pk_col.column_name) := v_actual_rows;
+                        v_pk_max_tab(v_auto_pk_cols(i).col_name) := v_actual_rows;
                         v_log := f_log(v_run_id, cmd.TABLE_NAME, 'f_fill_tables',
-                                       'INFO: PK column ' || pk_col.column_name
-                                       || ' length ' || pk_col.data_length
+                                       'INFO: PK column ' || v_auto_pk_cols(i).col_name
+                                       || ' length ' || v_auto_pk_cols(i).data_length
                                        || ' < 32 — SYS_GUID() too long; using '
                                        || 'sequential numeric string. Add a COLS '
                                        || 'entry to supply a custom expression.');
 
-                    ELSIF pk_col.data_type NOT IN ('VARCHAR2','CHAR','NVARCHAR2','NCHAR','RAW')
+                    ELSIF v_auto_pk_cols(i).data_type
+                              NOT IN ('VARCHAR2','CHAR','NVARCHAR2','NCHAR','RAW')
                     THEN
-                        -- Unsupported PK type — warn here in pre-analysis so the
-                        -- problem is visible before any insert is attempted and so
-                        -- p_analyze surfaces it correctly.  NULL will be inserted,
-                        -- which will fail with ORA-01400 if the column is NOT NULL.
+                        -- Unsupported PK type — warn before any insert is attempted.
+                        -- NULL will be inserted, which fails with ORA-01400 when NOT NULL.
                         v_log := f_log(v_run_id, cmd.TABLE_NAME, 'f_fill_tables',
-                                       'WARN: Auto-PK column ' || pk_col.column_name
-                                       || ' has unsupported type ' || pk_col.data_type
+                                       'WARN: Auto-PK column ' || v_auto_pk_cols(i).col_name
+                                       || ' has unsupported type '
+                                       || v_auto_pk_cols(i).data_type
                                        || '. NULL will be inserted — add a COLS entry '
                                        || 'to supply a custom expression.');
                     END IF;
                 END LOOP;
 
-                /* ------------------------------------------------------------
-                   COLS PRE-ANALYSIS
-                ------------------------------------------------------------ */
-                FOR cfg_col IN (
-                    SELECT column_name, filling_string
-                    FROM   T_DATGEN_TOY_COLS
-                    WHERE  table_name = cmd.TABLE_NAME
-                ) LOOP
-                    v_cfg_cnt := v_cfg_cnt + 1;
-                    v_cfg_cols(v_cfg_cnt).col_name := cfg_col.column_name;
-                    v_cfg_cols(v_cfg_cnt).fill_str := cfg_col.filling_string;
-                END LOOP;
-
-                /* ------------------------------------------------------------
-                   REGULAR COLUMN PRE-ANALYSIS
-                   Collect columns that are neither PK nor COLS-configured.
-                   Virtual and hidden columns are excluded — they are not
-                   insertable and would raise ORA-54013.
-                   NOT NULL columns with unsupported types are flagged here
-                   before the insert loop so the operator is warned early;
-                   inserting NULL into them would cause ORA-01400 at runtime.
-                ------------------------------------------------------------ */
-                FOR reg_col IN (
-                    SELECT utc.column_name,
-                           utc.data_type,
-                           -- NVARCHAR2/NCHAR: DATA_LENGTH is the byte limit;
-                           -- CHAR_LENGTH is the declared character limit.
-                           -- Use CHAR_LENGTH for N-types so f_random_string does
-                           -- not generate more characters than the column holds.
-                           CASE WHEN utc.data_type IN ('NVARCHAR2','NCHAR')
-                                THEN utc.char_length
-                                ELSE utc.data_length
-                           END AS data_length,
-                           utc.data_precision,
-                           utc.data_scale,
-                           utc.nullable
-                    FROM   user_tab_cols utc
-                    WHERE  utc.table_name      = cmd.TABLE_NAME
-                      -- Exclude virtual and hidden columns (not insertable)
-                      AND  utc.virtual_column  = 'NO'
-                      AND  utc.hidden_column   = 'NO'
-                      -- Exclude COLS-configured columns
-                      AND  utc.column_name NOT IN (
-                               SELECT c.column_name FROM T_DATGEN_TOY_COLS c
-                               WHERE  c.table_name = cmd.TABLE_NAME
-                           )
-                      -- Exclude PK columns (handled in Step 1)
-                      AND  utc.column_name NOT IN (
-                               SELECT ucc.column_name
-                               FROM   user_cons_columns ucc
-                               JOIN   user_constraints  uc
-                                      ON ucc.constraint_name = uc.constraint_name
-                               WHERE  uc.constraint_type = 'P'
-                                 AND  uc.table_name      = cmd.TABLE_NAME
-                           )
-                ) LOOP
-                    v_reg_cnt := v_reg_cnt + 1;
-                    v_reg_cols(v_reg_cnt).col_name   := reg_col.column_name;
-                    v_reg_cols(v_reg_cnt).data_type  := reg_col.data_type;
-                    v_reg_cols(v_reg_cnt).data_length:= reg_col.data_length;
-                    v_reg_cols(v_reg_cnt).data_prec  := reg_col.data_precision;
-                    v_reg_cols(v_reg_cnt).data_scale := reg_col.data_scale;
-                    v_reg_cols(v_reg_cnt).nullable   := reg_col.nullable;
-
-                    -- Set table-level LOB flag for the APPEND hint decision below.
-                    IF reg_col.data_type IN ('BLOB','CLOB','NCLOB') THEN
-                        v_table_has_lob := TRUE;
-                    END IF;
-
-                    -- Warn about unsupported-type columns before any inserts are
-                    -- attempted.  NOT NULL columns will fail with ORA-01400; nullable
-                    -- ones receive NULL silently.  Both are surfaced here so p_analyze
-                    -- and the pre-run log show the full picture before the first row.
-                    IF reg_col.data_type NOT IN (
+                /* -- Regular column unsupported-type warnings --------------- */
+                FOR i IN 1 .. v_reg_cnt LOOP
+                    IF v_reg_cols(i).data_type NOT IN (
                                'VARCHAR2','CHAR','NVARCHAR2','NCHAR',
                                'NUMBER','INTEGER','INT','SMALLINT','FLOAT',
                                'BINARY_FLOAT','BINARY_DOUBLE',
                                'DATE','RAW','BLOB','CLOB','NCLOB'
                            )
-                       AND reg_col.data_type NOT LIKE 'TIMESTAMP%'
+                       AND v_reg_cols(i).data_type NOT LIKE 'TIMESTAMP%'
                     THEN
-                        IF reg_col.nullable = 'N' THEN
+                        IF v_reg_cols(i).nullable = 'N' THEN
                             v_log := f_log(v_run_id, cmd.TABLE_NAME, 'f_fill_tables',
-                                           'WARN: Column ' || reg_col.column_name
-                                           || ' type ' || reg_col.data_type
+                                           'WARN: Column ' || v_reg_cols(i).col_name
+                                           || ' type ' || v_reg_cols(i).data_type
                                            || ' is NOT NULL and not supported — NULL will '
                                            || 'be inserted, causing ORA-01400. Add a COLS '
                                            || 'entry to supply a custom expression.');
                         ELSE
                             v_log := f_log(v_run_id, cmd.TABLE_NAME, 'f_fill_tables',
-                                           'INFO: Column ' || reg_col.column_name
-                                           || ' type ' || reg_col.data_type
+                                           'INFO: Column ' || v_reg_cols(i).col_name
+                                           || ' type ' || v_reg_cols(i).data_type
                                            || ' is not supported — NULL will be inserted. '
                                            || 'Add a COLS entry if a specific value '
                                            || 'is needed.');
@@ -951,11 +1015,24 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                         ELSIF v_reg_cols(i).data_type LIKE 'TIMESTAMP%' THEN
                             -- Covers TIMESTAMP, TIMESTAMP WITH TIME ZONE, and
                             -- TIMESTAMP WITH LOCAL TIME ZONE.
+                            -- TIMESTAMP WITH TIME ZONE uses TO_TIMESTAMP_TZ with a
+                            -- fixed UTC offset so the value is timezone-aware.
+                            -- The other two variants use TO_TIMESTAMP; Oracle implicitly
+                            -- converts TIMESTAMP → TIMESTAMP WITH LOCAL TIME ZONE on
+                            -- storage using the DB timezone.
                             v_random_ts := f_random_timestamp(cmd.DATE_FROM, cmd.DATE_TO);
-                            v_values := v_values
-                                        || ',TO_TIMESTAMP('''
-                                        || TO_CHAR(v_random_ts, 'YYYY-MM-DD HH24:MI:SS.FF6')
-                                        || ''',''YYYY-MM-DD HH24:MI:SS.FF6'')';
+                            IF v_reg_cols(i).data_type = 'TIMESTAMP WITH TIME ZONE' THEN
+                                v_values := v_values
+                                            || ',TO_TIMESTAMP_TZ('''
+                                            || TO_CHAR(v_random_ts, 'YYYY-MM-DD HH24:MI:SS.FF6')
+                                            || ' +00:00'
+                                            || ''',''YYYY-MM-DD HH24:MI:SS.FF6 TZH:TZM'')';
+                            ELSE
+                                v_values := v_values
+                                            || ',TO_TIMESTAMP('''
+                                            || TO_CHAR(v_random_ts, 'YYYY-MM-DD HH24:MI:SS.FF6')
+                                            || ''',''YYYY-MM-DD HH24:MI:SS.FF6'')';
+                            END IF;
 
                         /* ---- RAW ------------------------------------------- */
                         ELSIF v_reg_cols(i).data_type = 'RAW' THEN
@@ -1002,11 +1079,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                        prevent temp LOB cache growth during long-running inserts.
                     ---------------------------------------------------------- */
                     IF v_use_append THEN
-                        v_stmt := 'INSERT /*+ APPEND */ INTO ' || cmd.TABLE_NAME
+                        v_stmt := 'INSERT /*+ APPEND */ INTO ' || v_safe_tbl
                                   || ' (' || TRIM(',' FROM v_columns) || ')'
                                   || ' VALUES (' || TRIM(',' FROM v_values) || ')';
                     ELSE
-                        v_stmt := 'INSERT INTO ' || cmd.TABLE_NAME
+                        v_stmt := 'INSERT INTO ' || v_safe_tbl
                                   || ' (' || TRIM(',' FROM v_columns) || ')'
                                   || ' VALUES (' || TRIM(',' FROM v_values) || ')';
                     END IF;
@@ -1020,7 +1097,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                         FOR i IN 1..v_blob_count LOOP
                             v_tmp_blob := f_random_blob(v_lob_cycle);
                             EXECUTE IMMEDIATE
-                                'UPDATE ' || cmd.TABLE_NAME
+                                'UPDATE ' || v_safe_tbl
                                 || ' SET '   || v_blob_cols(i) || ' = :1'
                                 || ' WHERE ROWID = :2'
                                 USING v_tmp_blob, v_rowid;
@@ -1031,7 +1108,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                         FOR i IN 1..v_clob_count LOOP
                             v_tmp_clob := f_random_clob(v_lob_cycle);
                             EXECUTE IMMEDIATE
-                                'UPDATE ' || cmd.TABLE_NAME
+                                'UPDATE ' || v_safe_tbl
                                 || ' SET '   || v_clob_cols(i) || ' = :1'
                                 || ' WHERE ROWID = :2'
                                 USING v_tmp_clob, v_rowid;
@@ -1080,10 +1157,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                 WHEN OTHERS THEN
                     -- Roll back this table's uncommitted work only.
                     ROLLBACK;
-                    v_log_discard := f_log(v_run_id, cmd.TABLE_NAME, 'f_fill_tables',
-                                           'ERROR: ' || SQLERRM
-                                           || ' — work since last commit rolled back. '
-                                           || 'Continuing to next table.');
+                    f_log(v_run_id, cmd.TABLE_NAME, 'f_fill_tables',
+                          'ERROR: ' || SQLERRM
+                          || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE
+                          || ' — work since last commit rolled back. '
+                          || 'Continuing to next table.');
             END; -- per-table block
 
         END LOOP; -- outer table loop
@@ -1096,8 +1174,10 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         WHEN OTHERS THEN
             -- Catch errors outside the per-table block (e.g. run-start failure).
             ROLLBACK;
-            v_log_discard := f_log(v_run_id, NULL, 'f_fill_tables',
-                                   'FATAL: ' || SQLERRM || ' — run aborted.');
+            f_log(v_run_id, NULL, 'f_fill_tables',
+                  'FATAL: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE
+                  || ' — run aborted.');
             RETURN 0;
     END f_fill_tables;
 
@@ -1186,6 +1266,14 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         v_cmd_count     NUMBER;
         v_tbl_count     NUMBER;
         v_log           VARCHAR2(4000);
+        v_auto_pk_cols  t_pk_tab;
+        v_auto_pk_cnt   PLS_INTEGER;
+        v_cfg_cols      t_cfg_tab;
+        v_cfg_cnt       PLS_INTEGER;
+        v_reg_cols      t_reg_tab;
+        v_reg_cnt       PLS_INTEGER;
+        v_table_has_lob BOOLEAN;           -- required OUT parameter for get_column_sets
+        v_fill_test     VARCHAR2(4000);    -- dummy target for FILLING_STRING test-execute
     BEGIN
         SELECT SEQ_DATGEN_TOY_LOG_ID.NEXTVAL INTO v_run_id FROM DUAL;
         v_log := f_log(v_run_id, v_tbl, 'p_analyze',
@@ -1222,6 +1310,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
             -- Continue analysis — report 0 columns rather than aborting silently.
         END IF;
 
+        -- Collect all three column sets using the same logic as f_fill_tables.
+        get_column_sets(v_tbl,
+                        v_auto_pk_cols, v_auto_pk_cnt,
+                        v_cfg_cols,     v_cfg_cnt,
+                        v_reg_cols,     v_reg_cnt,
+                        v_table_has_lob);
+
         -- PK summary
         SELECT COUNT(*) INTO v_pk_col_count
         FROM   user_cons_columns ucc
@@ -1241,119 +1336,92 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
         END IF;
 
         -- Log each auto-handled PK column and its generation strategy.
-        FOR pk_col IN (
-            SELECT ucc.column_name,
-                   utc.data_type,
-                   CASE WHEN utc.data_type IN ('NVARCHAR2','NCHAR')
-                        THEN utc.char_length
-                        ELSE utc.data_length
-                   END AS data_length
-            FROM   user_cons_columns ucc
-            JOIN   user_constraints  uc  ON ucc.constraint_name = uc.constraint_name
-            JOIN   user_tab_cols     utc ON utc.table_name       = ucc.table_name
-                                       AND utc.column_name       = ucc.column_name
-            WHERE  uc.constraint_type = 'P'
-              AND  uc.table_name      = v_tbl
-              AND  NOT EXISTS (
-                       SELECT 1 FROM T_DATGEN_TOY_COLS c
-                       WHERE  c.table_name  = ucc.table_name
-                         AND  c.column_name = ucc.column_name
-                   )
-        ) LOOP
-            IF pk_col.data_type = 'NUMBER' THEN
+        FOR i IN 1 .. v_auto_pk_cnt LOOP
+            IF v_auto_pk_cols(i).data_type = 'NUMBER' THEN
                 v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                               '  PK ' || pk_col.column_name
-                               || ' (' || pk_col.data_type || ')'
+                               '  PK ' || v_auto_pk_cols(i).col_name
+                               || ' (' || v_auto_pk_cols(i).data_type || ')'
                                || ' → auto: MAX+N');
-            ELSIF pk_col.data_type IN ('VARCHAR2','CHAR','NVARCHAR2','NCHAR') THEN
-                IF pk_col.data_length >= 32 THEN
+            ELSIF v_auto_pk_cols(i).data_type IN ('VARCHAR2','CHAR','NVARCHAR2','NCHAR') THEN
+                IF v_auto_pk_cols(i).data_length >= 32 THEN
                     v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                                   '  PK ' || pk_col.column_name
-                                   || ' (' || pk_col.data_type
-                                   || '(' || pk_col.data_length || '))'
+                                   '  PK ' || v_auto_pk_cols(i).col_name
+                                   || ' (' || v_auto_pk_cols(i).data_type
+                                   || '(' || v_auto_pk_cols(i).data_length || '))'
                                    || ' → auto: SYS_GUID()');
                 ELSE
                     v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                                   '  PK ' || pk_col.column_name
-                                   || ' (' || pk_col.data_type
-                                   || '(' || pk_col.data_length || '))'
+                                   '  PK ' || v_auto_pk_cols(i).col_name
+                                   || ' (' || v_auto_pk_cols(i).data_type
+                                   || '(' || v_auto_pk_cols(i).data_length || '))'
                                    || ' → auto: sequential string '
                                    || '(column too short for SYS_GUID)');
                 END IF;
-            ELSIF pk_col.data_type = 'RAW' THEN
+            ELSIF v_auto_pk_cols(i).data_type = 'RAW' THEN
                 v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                               '  PK ' || pk_col.column_name
+                               '  PK ' || v_auto_pk_cols(i).col_name
                                || ' (RAW) → auto: SYS_GUID()');
             ELSE
                 v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                               '  PK ' || pk_col.column_name
-                               || ' (' || pk_col.data_type
+                               '  PK ' || v_auto_pk_cols(i).col_name
+                               || ' (' || v_auto_pk_cols(i).data_type
                                || ') UNSUPPORTED → NULL will be inserted');
             END IF;
         END LOOP;
 
-        -- Log COLS-configured columns.
-        FOR cfg_col IN (
-            SELECT column_name, constraint_type, filling_string
-            FROM   T_DATGEN_TOY_COLS
-            WHERE  table_name = v_tbl
-        ) LOOP
+        -- Log COLS-configured columns; test-execute each FILLING_STRING to surface
+        -- syntax errors and invalid expressions before any inserts run (Fix 7).
+        FOR i IN 1 .. v_cfg_cnt LOOP
             v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                           '  COLS ' || cfg_col.column_name
-                           || ' [' || cfg_col.constraint_type || ']'
+                           '  COLS ' || v_cfg_cols(i).col_name
+                           || ' [' || v_cfg_cols(i).constraint_type || ']'
                            || ' → custom: '
-                           || SUBSTR(cfg_col.filling_string, 1, 80));
+                           || SUBSTR(v_cfg_cols(i).fill_str, 1, 80));
+
+            -- Test-execute the expression against DUAL.  A bad expression is caught
+            -- here so the operator can fix configuration before running a real fill.
+            BEGIN
+                EXECUTE IMMEDIATE
+                    'SELECT ' || v_cfg_cols(i).fill_str || ' FROM DUAL'
+                    INTO v_fill_test;
+            EXCEPTION
+                WHEN OTHERS THEN
+                    v_log := f_log(v_run_id, v_tbl, 'p_analyze',
+                                   '  COLS ' || v_cfg_cols(i).col_name
+                                   || ' FILLING_STRING test FAILED: '
+                                   || SQLERRM
+                                   || ' | Expression: '
+                                   || SUBSTR(v_cfg_cols(i).fill_str, 1, 200));
+            END;
         END LOOP;
 
         -- Log regular columns; flag NOT NULL unsupported-type problems.
-        FOR reg_col IN (
-            SELECT utc.column_name,
-                   utc.data_type,
-                   CASE WHEN utc.data_type IN ('NVARCHAR2','NCHAR')
-                        THEN utc.char_length
-                        ELSE utc.data_length
-                   END AS data_length,
-                   utc.nullable
-            FROM   user_tab_cols utc
-            WHERE  utc.table_name     = v_tbl
-              AND  utc.virtual_column = 'NO'
-              AND  utc.hidden_column  = 'NO'
-              AND  utc.column_name NOT IN (
-                       SELECT c.column_name FROM T_DATGEN_TOY_COLS c
-                       WHERE  c.table_name = v_tbl
-                   )
-              AND  utc.column_name NOT IN (
-                       SELECT ucc.column_name
-                       FROM   user_cons_columns ucc
-                       JOIN   user_constraints  uc ON ucc.constraint_name = uc.constraint_name
-                       WHERE  uc.constraint_type = 'P' AND uc.table_name = v_tbl
-                   )
-        ) LOOP
-            IF reg_col.data_type NOT IN (
+        FOR i IN 1 .. v_reg_cnt LOOP
+            IF v_reg_cols(i).data_type NOT IN (
                    'VARCHAR2','CHAR','NVARCHAR2','NCHAR',
                    'NUMBER','INTEGER','INT','SMALLINT','FLOAT',
                    'BINARY_FLOAT','BINARY_DOUBLE',
                    'DATE','RAW','BLOB','CLOB','NCLOB'
                )
-               AND reg_col.data_type NOT LIKE 'TIMESTAMP%'
+               AND v_reg_cols(i).data_type NOT LIKE 'TIMESTAMP%'
             THEN
-                IF reg_col.nullable = 'N' THEN
+                IF v_reg_cols(i).nullable = 'N' THEN
                     v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                                   '  REG ' || reg_col.column_name
-                                   || ' (' || reg_col.data_type
+                                   '  REG ' || v_reg_cols(i).col_name
+                                   || ' (' || v_reg_cols(i).data_type
                                    || ') NOT NULL UNSUPPORTED'
                                    || ' → WILL FAIL (ORA-01400)');
                 ELSE
                     v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                                   '  REG ' || reg_col.column_name
-                                   || ' (' || reg_col.data_type
+                                   '  REG ' || v_reg_cols(i).col_name
+                                   || ' (' || v_reg_cols(i).data_type
                                    || ') unsupported → NULL will be inserted');
                 END IF;
             ELSE
                 v_log := f_log(v_run_id, v_tbl, 'p_analyze',
-                               '  REG ' || reg_col.column_name
-                               || ' (' || reg_col.data_type || ')'
-                               || CASE WHEN reg_col.nullable = 'N'
+                               '  REG ' || v_reg_cols(i).col_name
+                               || ' (' || v_reg_cols(i).data_type || ')'
+                               || CASE WHEN v_reg_cols(i).nullable = 'N'
                                        THEN ' NOT NULL' ELSE '' END
                                || ' → auto');
             END IF;
@@ -1367,8 +1435,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
 
     EXCEPTION
         WHEN OTHERS THEN
-            v_log_discard := f_log(v_run_id, v_tbl, 'p_analyze',
-                                   'ERROR: ' || SQLERRM);
+            f_log(v_run_id, v_tbl, 'p_analyze',
+                  'ERROR: ' || SQLERRM
+                  || ' | ' || DBMS_UTILITY.FORMAT_ERROR_BACKTRACE);
             DBMS_OUTPUT.PUT_LINE('Analysis error: ' || SQLERRM);
     END p_analyze;
 
