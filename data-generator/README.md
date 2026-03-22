@@ -10,6 +10,8 @@ The script sat untouched for a few years.
 
 A few weeks ago I rediscovered it, and decided it was worth doing properly. The old issues (LOB path, missing types, NLS-unsafe numeric literals, raw byte handling) were fixed, the API was expanded, and the code was commented extensively so that anyone picking it up — including future me — can understand exactly what each part does and why. AI assistance was used throughout: to identify problems in the original code, to reason through edge cases, and to write the inline documentation that now accompanies every function, cursor, and design decision.
 
+After that first revision worked well on all my test cases, I installed a large set of skills and tools into my Claude setup — Oracle DBA guides, PL/SQL best-practice packs, security hardening rules, and more. A follow-up analysis with those tools available suggested seven further improvements: a missing `PRAGMA AUTONOMOUS_TRANSACTION` on the log function, a broken `TIMESTAMP WITH TIME ZONE` literal, SQL injection risk on table name identifiers, code duplication in the column-collection logic, incomplete error backtraces, a clunky discard-variable pattern for log calls, and no pre-run validation of custom expressions. I applied most of those changes. The previous version worked correctly on my test cases, but this one should be better — safer, cleaner, and with earlier, more useful error messages.
+
 The result is what you see here.
 
 ---
@@ -69,6 +71,6 @@ See [MANUAL.md](MANUAL.md) for full configuration reference, all public API call
 ## Requirements
 
 - Oracle Database 12c or later (uses `FETCH FIRST N ROWS ONLY` in COLS expressions)
-- Execute privilege on `DBMS_RANDOM`, `DBMS_LOB`, `SYS_GUID`
+- Execute privilege on `DBMS_RANDOM`, `DBMS_LOB`, `DBMS_ASSERT`, `DBMS_UTILITY`, `SYS_GUID`
 - A writable user tablespace (LOB content can grow quickly — size accordingly)
 - All objects are created in the current schema (`USER_TABLES`, `USER_TAB_COLS`, etc.)

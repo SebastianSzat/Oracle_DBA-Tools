@@ -207,7 +207,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
 
     TYPE t_cfg_rec IS RECORD (
         col_name         VARCHAR2(64),
-        constraint_type  VARCHAR2(1),
+        constraint_type  VARCHAR2(16),
         fill_str         VARCHAR2(4000)
     );
     TYPE t_cfg_tab IS TABLE OF t_cfg_rec INDEX BY PLS_INTEGER;

@@ -84,7 +84,7 @@ Columns **not** listed here are handled automatically by the package based on th
 | `TABLE_NAME` | VARCHAR2(64) | Target table. Must have a matching entry in `T_DATGEN_TOY_CMD`. Part of the composite primary key. |
 | `COLUMN_NAME` | VARCHAR2(64) | Column within the target table. Part of the composite primary key. |
 | `FILLING_STRING` | VARCHAR2(4000) | A complete `SELECT` statement (including `FROM` clause) that returns exactly one value. Executed at row-generation time via `EXECUTE IMMEDIATE … INTO`. The result is embedded directly into the `VALUES` clause — see quoting rules below. |
-| `CONSTRAINT_TYPE` | VARCHAR2(16) | Category: `PK`, `FK`, `UI` (unique index), or `LOB`. Informational — used for documentation and filtering. |
+| `CONSTRAINT_TYPE` | VARCHAR2(16) | Category label: `PK`, `FK`, `UI` (unique index), or `LOB`. Informational — stored and echoed in `p_analyze` output, but does not affect how the value is generated. |
 
 ### Quoting rules for FILLING_STRING
 
@@ -178,7 +178,7 @@ Alias for `p_enable`. Provided for readability — "reset for another run" reads
 BEGIN PKG_DATGEN_TOY.p_analyze('MY_TABLE'); END;
 ```
 
-Dry-run pre-analysis. Logs what `f_fill_tables` would do — PK strategy for each column, COLS overrides, regular columns with their auto-detection path, warnings for unsupported NOT NULL types — without inserting any data. Prints the `RUN_ID` to `DBMS_OUTPUT` so you can query the log immediately.
+Dry-run pre-analysis. Logs what `f_fill_tables` would do — PK strategy for each column, COLS overrides with each `FILLING_STRING` test-executed to catch syntax errors early, regular columns with their auto-detection path, warnings for unsupported NOT NULL types — without inserting any data. Prints the `RUN_ID` to `DBMS_OUTPUT` so you can query the log immediately.
 
 Use this to validate configuration before committing to a real run:
 
@@ -223,8 +223,8 @@ The following data types are handled automatically. Columns with any other type 
 | `BINARY_DOUBLE` | Random IEEE 754 double-precision value via `TO_BINARY_DOUBLE`. |
 | `DATE` | Random date between `DATE_FROM` and `DATE_TO` from the CMD row. |
 | `TIMESTAMP` | Random timestamp between `DATE_FROM` and `DATE_TO`, sub-second precision. |
-| `TIMESTAMP WITH TIME ZONE` | Same as TIMESTAMP; Oracle applies the session timezone on insert. |
-| `TIMESTAMP WITH LOCAL TIME ZONE` | Same as TIMESTAMP; Oracle normalises to the database timezone on insert. |
+| `TIMESTAMP WITH TIME ZONE` | Random timestamp generated via `TO_TIMESTAMP_TZ` with a fixed UTC (`+00:00`) offset, ensuring the value is timezone-aware rather than session-dependent. |
+| `TIMESTAMP WITH LOCAL TIME ZONE` | Random timestamp via `TO_TIMESTAMP`; Oracle normalises to the database timezone on storage. |
 | `RAW` | Random bytes up to the column's declared length, generated via `SYS_GUID()`. |
 | `BLOB` | Random binary content of approximately `LOB_SIZE_KB` kilobytes. |
 | `CLOB` | Random alphanumeric text of approximately `LOB_SIZE_KB` kilobytes. |
@@ -312,7 +312,7 @@ Log entries use the following prefixes in `STATUS_INFO`:
 | `ERROR:` | Per-table failure with rollback. The run continues to the next table. |
 | `FATAL:` | Failure outside the per-table block. The run is aborted. |
 
-Each `f_log` call issues its own `COMMIT`, so log entries survive even if the calling transaction is later rolled back.
+Each `f_log` call runs in its own autonomous transaction (`PRAGMA AUTONOMOUS_TRANSACTION`), so the `COMMIT` inside `f_log` never touches the caller's in-progress DML. Log entries are durable even if the calling transaction is later rolled back.
 
 Indexes on `TABLE_NAME`, `MODIFIED`, and `RUN_ID` support the three most common query patterns.
 
