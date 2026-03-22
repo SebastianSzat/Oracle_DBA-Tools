@@ -1378,12 +1378,11 @@ CREATE OR REPLACE PACKAGE BODY PKG_DATGEN_TOY AS
                            || ' → custom: '
                            || SUBSTR(v_cfg_cols(i).fill_str, 1, 80));
 
-            -- Test-execute the expression against DUAL.  A bad expression is caught
-            -- here so the operator can fix configuration before running a real fill.
+            -- Test-execute the statement exactly as f_fill_tables would run it.
+            -- A bad FILLING_STRING is caught here so the operator can fix
+            -- configuration before running a real fill.
             BEGIN
-                EXECUTE IMMEDIATE
-                    'SELECT ' || v_cfg_cols(i).fill_str || ' FROM DUAL'
-                    INTO v_fill_test;
+                EXECUTE IMMEDIATE v_cfg_cols(i).fill_str INTO v_fill_test;
             EXCEPTION
                 WHEN OTHERS THEN
                     v_log := f_log(v_run_id, v_tbl, 'p_analyze',
