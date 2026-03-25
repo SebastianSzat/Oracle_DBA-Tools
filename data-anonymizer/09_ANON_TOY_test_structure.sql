@@ -1,0 +1,268 @@
+-- =============================================================================
+-- 09_ANON_TOY_test_structure.sql
+-- Sample test tables and PKG_ANON_TOY configuration for a realistic
+-- healthcare / banking scenario:
+--
+--   T_ANON_TEST_PATIENT   — patient master record (PK: PATIENT_ID)
+--   T_ANON_TEST_ACCOUNT   — bank account per patient (FK → PATIENT_ID)
+--   T_ANON_TEST_VISIT     — clinical visit (FK → PATIENT_ID)
+--
+-- Run as ANON_TOY after 08_PKG_ANON_TOY.sql.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- 1. Test tables  (run as ANON_TOY or any user with CREATE TABLE)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE T_ANON_TEST_PATIENT (
+    PATIENT_ID      NUMBER(10)     NOT NULL,
+    FIRST_NAME      VARCHAR2(64)   NOT NULL,
+    LAST_NAME       VARCHAR2(64)   NOT NULL,
+    BIRTH_DATE      DATE,
+    NATIONAL_ID     VARCHAR2(20),
+    PHONE           VARCHAR2(20),
+    EMAIL           VARCHAR2(128),
+    MODIFIED        DATE           DEFAULT SYSDATE NOT NULL,
+    CONSTRAINT PK_TEST_PATIENT PRIMARY KEY (PATIENT_ID)
+);
+
+CREATE TABLE T_ANON_TEST_ACCOUNT (
+    ACCOUNT_ID      NUMBER(10)     NOT NULL,
+    PATIENT_ID      NUMBER(10)     NOT NULL,   -- FK → T_ANON_TEST_PATIENT
+    IBAN            VARCHAR2(34),
+    BANK_ACCOUNT    VARCHAR2(26),
+    TAX_NUMBER      VARCHAR2(20),
+    MODIFIED        DATE           DEFAULT SYSDATE NOT NULL,
+    CONSTRAINT PK_TEST_ACCOUNT  PRIMARY KEY (ACCOUNT_ID),
+    CONSTRAINT FK_TEST_ACC_PAT  FOREIGN KEY (PATIENT_ID)
+        REFERENCES T_ANON_TEST_PATIENT (PATIENT_ID)
+);
+
+CREATE TABLE T_ANON_TEST_VISIT (
+    VISIT_ID        NUMBER(10)     NOT NULL,
+    PATIENT_ID      NUMBER(10)     NOT NULL,   -- FK → T_ANON_TEST_PATIENT
+    VISIT_DATE      DATE,
+    DOCTOR_NAME     VARCHAR2(64),
+    DIAGNOSIS_CODE  VARCHAR2(16),
+    MEDICATION      VARCHAR2(128),
+    NOTES           VARCHAR2(4000),
+    MODIFIED        DATE           DEFAULT SYSDATE NOT NULL,
+    CONSTRAINT PK_TEST_VISIT    PRIMARY KEY (VISIT_ID),
+    CONSTRAINT FK_TEST_VIS_PAT  FOREIGN KEY (PATIENT_ID)
+        REFERENCES T_ANON_TEST_PATIENT (PATIENT_ID)
+);
+
+-- ---------------------------------------------------------------------------
+-- 2. Sample data — clearly fictional, matching pool categories
+-- ---------------------------------------------------------------------------
+
+INSERT INTO T_ANON_TEST_PATIENT (PATIENT_ID, FIRST_NAME, LAST_NAME, BIRTH_DATE,
+                                  NATIONAL_ID, PHONE, EMAIL)
+VALUES (1, 'Karl',   'Hancz',   DATE '1978-03-14',
+        'AB123456CD', '+36201234567', 'karl.hancz@example.com');
+
+INSERT INTO T_ANON_TEST_PATIENT (PATIENT_ID, FIRST_NAME, LAST_NAME, BIRTH_DATE,
+                                  NATIONAL_ID, PHONE, EMAIL)
+VALUES (2, 'Marta',  'Varga',   DATE '1990-07-22',
+        'EF789012GH', '+36309876543', 'marta.varga@example.com');
+
+INSERT INTO T_ANON_TEST_PATIENT (PATIENT_ID, FIRST_NAME, LAST_NAME, BIRTH_DATE,
+                                  NATIONAL_ID, PHONE, EMAIL)
+VALUES (3, 'Peter',  'Kovacs',  DATE '1965-11-05',
+        'IJ345678KL', '+36705551234', 'peter.kovacs@example.com');
+
+INSERT INTO T_ANON_TEST_ACCOUNT (ACCOUNT_ID, PATIENT_ID, IBAN, BANK_ACCOUNT,
+                                  TAX_NUMBER)
+VALUES (101, 1, 'HU42117730161111101800000000', '11773016-11111018-00000000',
+        '12345678-2-41');
+
+INSERT INTO T_ANON_TEST_ACCOUNT (ACCOUNT_ID, PATIENT_ID, IBAN, BANK_ACCOUNT,
+                                  TAX_NUMBER)
+VALUES (102, 2, 'HU58116000060000000012345676', '11600006-00000000-12345676',
+        '87654321-1-13');
+
+INSERT INTO T_ANON_TEST_ACCOUNT (ACCOUNT_ID, PATIENT_ID, IBAN, BANK_ACCOUNT,
+                                  TAX_NUMBER)
+VALUES (103, 3, 'HU93116000060000000099887766', '11600006-00000000-99887766',
+        '11223344-3-22');
+
+INSERT INTO T_ANON_TEST_VISIT (VISIT_ID, PATIENT_ID, VISIT_DATE,
+                                DOCTOR_NAME, DIAGNOSIS_CODE, MEDICATION, NOTES)
+VALUES (1001, 1, DATE '2024-01-15',
+        'Dr. Smith', 'Z14.891', 'Aethermycin 500 mg',
+        'Routine checkup. No complications.');
+
+INSERT INTO T_ANON_TEST_VISIT (VISIT_ID, PATIENT_ID, VISIT_DATE,
+                                DOCTOR_NAME, DIAGNOSIS_CODE, MEDICATION, NOTES)
+VALUES (1002, 2, DATE '2024-02-20',
+        'Dr. Jones', 'A27.193', 'Verdanix 10 mg',
+        'Follow-up on prior diagnosis.');
+
+INSERT INTO T_ANON_TEST_VISIT (VISIT_ID, PATIENT_ID, VISIT_DATE,
+                                DOCTOR_NAME, DIAGNOSIS_CODE, MEDICATION, NOTES)
+VALUES (1003, 3, DATE '2024-03-05',
+        'Dr. Brown', 'B34.712', 'Solvathrin 250 mg',
+        'Annual review. Medication adjusted.');
+
+COMMIT;
+
+-- ---------------------------------------------------------------------------
+-- 3. PKG_ANON_TOY configuration
+-- ---------------------------------------------------------------------------
+
+-- CMD: define tables and processing order
+-- Parents (PATIENT) must have lower LVL than children (ACCOUNT, VISIT)
+INSERT INTO T_ANON_TOY_CMD (TABLE_SCHEMA, TABLE_NAME, LVL, IF_ANONYMIZE, COMMIT_EVERY)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 10, 1, 500);
+
+INSERT INTO T_ANON_TOY_CMD (TABLE_SCHEMA, TABLE_NAME, LVL, IF_ANONYMIZE, COMMIT_EVERY)
+VALUES ('ANON_TOY', 'T_ANON_TEST_ACCOUNT', 20, 1, 500);
+
+INSERT INTO T_ANON_TOY_CMD (TABLE_SCHEMA, TABLE_NAME, LVL, IF_ANONYMIZE, COMMIT_EVERY)
+VALUES ('ANON_TOY', 'T_ANON_TEST_VISIT',   30, 1, 500);
+
+-- COLS: T_ANON_TEST_PATIENT
+-- PATIENT_ID is the PK being referenced by child tables — mark IS_PK_SOURCE='Y'
+-- so p_apply_map knows to cascade via DBA_CONSTRAINTS auto-discovery.
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     IS_PK_SOURCE, CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 'PATIENT_ID',
+        'SCRAMBLE', NULL, 'Y', 'PK');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 'FIRST_NAME',
+        'POOL', 'FIRST_NAME', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 'LAST_NAME',
+        'POOL', 'LAST_NAME', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, SHIFT_RANGE,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 'BIRTH_DATE',
+        'SHIFT', 180, 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 'NATIONAL_ID',
+        'POOL', 'NATIONAL_ID_HU', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 'PHONE',
+        'POOL', 'PHONE_HU', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_PATIENT', 'EMAIL',
+        'POOL', 'EMAIL', 'DATA');
+
+-- COLS: T_ANON_TEST_ACCOUNT
+-- PATIENT_ID is a FK column — its mapping comes from PATIENT's PATIENT_ID mapping
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD,
+     MAP_SOURCE_SCHEMA, MAP_SOURCE_TABLE, MAP_SOURCE_COLUMN,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_ACCOUNT', 'PATIENT_ID',
+        'SCRAMBLE',
+        'ANON_TOY', 'T_ANON_TEST_PATIENT', 'PATIENT_ID',
+        'FK');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_ACCOUNT', 'IBAN',
+        'POOL', 'IBAN', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_ACCOUNT', 'BANK_ACCOUNT',
+        'POOL', 'BANK_ACCOUNT_HU3', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_ACCOUNT', 'TAX_NUMBER',
+        'POOL', 'TAX_NUMBER', 'DATA');
+
+-- COLS: T_ANON_TEST_VISIT
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD,
+     MAP_SOURCE_SCHEMA, MAP_SOURCE_TABLE, MAP_SOURCE_COLUMN,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_VISIT', 'PATIENT_ID',
+        'SCRAMBLE',
+        'ANON_TOY', 'T_ANON_TEST_PATIENT', 'PATIENT_ID',
+        'FK');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, SHIFT_RANGE,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_VISIT', 'VISIT_DATE',
+        'SHIFT', 90, 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_VISIT', 'DOCTOR_NAME',
+        'POOL', 'DOCTOR_NAME', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_VISIT', 'DIAGNOSIS_CODE',
+        'POOL', 'DIAGNOSIS_CODE', 'DATA');
+
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD, DATA_CATEGORY,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_VISIT', 'MEDICATION',
+        'POOL', 'MEDICATION', 'DATA');
+
+-- NOTES: free-text — scramble to make it unrecognizable
+INSERT INTO T_ANON_TOY_COLS
+    (TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ANON_METHOD,
+     CONSTRAINT_TYPE)
+VALUES ('ANON_TOY', 'T_ANON_TEST_VISIT', 'NOTES',
+        'SCRAMBLE', 'DATA');
+
+COMMIT;
+
+-- ---------------------------------------------------------------------------
+-- 4. Quick-start usage examples
+-- ---------------------------------------------------------------------------
+-- Dry run (validates config, tests CUSTOM_EXPR, checks pool entries):
+--   EXEC PKG_ANON_TOY.p_analyze;
+--
+-- Build mappings only:
+--   EXEC PKG_ANON_TOY.p_build_map;
+--
+-- Apply mappings only (reuses existing MAP entries):
+--   EXEC PKG_ANON_TOY.p_apply_map;
+--
+-- Full run (build + apply):
+--   EXEC PKG_ANON_TOY.p_run;
+--
+-- Single table:
+--   EXEC PKG_ANON_TOY.p_run('ANON_TOY', 'T_ANON_TEST_PATIENT');
+--
+-- Review log:
+--   SELECT * FROM T_ANON_TOY_LOG ORDER BY ID;
+--
+-- Review mappings:
+--   SELECT * FROM T_ANON_TOY_MAP WHERE SOURCE_TABLE = 'T_ANON_TEST_PATIENT';
+--
+-- Re-run after resetting flags:
+--   EXEC PKG_ANON_TOY.p_enable_all;
+--   EXEC PKG_ANON_TOY.p_run;
+-- ---------------------------------------------------------------------------
