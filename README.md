@@ -1,6 +1,6 @@
 # Oracle DBA Tools
 
-A collection of Oracle DBA utilities for database administration and maintenance tasks.
+A collection of Database utilities for development, administration, and maintenance tasks. Mostly Oracle specific.
 
 ## Projects
 
